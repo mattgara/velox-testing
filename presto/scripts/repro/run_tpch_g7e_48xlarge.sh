@@ -274,6 +274,11 @@ setprop $C exchange.max-buffer-size 512MB
 setprop $C exchange.max-response-size 64MB
 setprop $C sink.max-buffer-size 512MB
 setprop $C query.max-execution-time 100m
+# Extra coordinator properties for experiments, e.g.
+# EXTRA_COORDINATOR_PROPERTIES="join-max-broadcast-table-size=2GB".
+for kv in ${EXTRA_COORDINATOR_PROPERTIES:-}; do
+  setprop $C "${kv%%=*}" "${kv#*=}"
+done
 
 # 3. Start the cluster with the configs above.
 ./start_native_gpu_presto.sh --skip-generate-config -w 8 -g 0,1,2,3,4,5,6,7 --kvikio-threads 16 --num-drivers 2
