@@ -211,6 +211,20 @@ export UCX_NET_DEVICES_GPU_0=rdmap145s0:1,enp135s0 UCX_NET_DEVICES_GPU_1=rdmap14
 export UCX_NET_DEVICES_GPU_2=rdmap162s0:1,enp135s0 UCX_NET_DEVICES_GPU_3=rdmap162s0:1,enp135s0
 export UCX_NET_DEVICES_GPU_4=rdmap179s0:1,enp135s0 UCX_NET_DEVICES_GPU_5=rdmap179s0:1,enp135s0
 export UCX_NET_DEVICES_GPU_6=rdmap196s0:1,enp135s0 UCX_NET_DEVICES_GPU_7=rdmap196s0:1,enp135s0
+# Experiments: emulate less network per GPU by sharing fewer EFA cards. EFA_CARDS=2 puts GPUs 0-3 on
+# rdmap145s0 and 4-7 on rdmap179s0 (both NUMA-local); EFA_CARDS=1 puts all eight on rdmap145s0.
+case ${EFA_CARDS:-4} in
+  4) ;;
+  2)
+    for i in 0 1 2 3; do export UCX_NET_DEVICES_GPU_$i=rdmap145s0:1,enp135s0; done
+    for i in 4 5 6 7; do export UCX_NET_DEVICES_GPU_$i=rdmap179s0:1,enp135s0; done
+    ;;
+  1) for i in 0 1 2 3 4 5 6 7; do export UCX_NET_DEVICES_GPU_$i=rdmap145s0:1,enp135s0; done ;;
+  *)
+    echo "Error: EFA_CARDS must be 4, 2 or 1"
+    exit 1
+    ;;
+esac
 
 # S3 through KvikIO: each GPU pair on its NUMA-local ENA NIC.
 if [[ $NIC_BIND == true ]]; then
