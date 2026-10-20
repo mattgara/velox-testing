@@ -281,6 +281,11 @@ for i in 0 1 2 3 4 5 6 7; do
   for kv in ${EXTRA_WORKER_PROPERTIES:-}; do
     setprop $W/config_native.properties "${kv%%=*}" "${kv#*=}"
   done
+  # Extra worker Hive catalog properties for experiments, e.g.
+  # EXTRA_WORKER_HIVE_PROPERTIES="parquet.reader.chunk-read-limit=536870912".
+  for kv in ${EXTRA_WORKER_HIVE_PROPERTIES:-}; do
+    setprop $W/catalog/hive.properties "${kv%%=*}" "${kv#*=}"
+  done
 done
 C=$G/etc_coordinator/config_native.properties
 setprop $C join-max-broadcast-table-size 20788MB
