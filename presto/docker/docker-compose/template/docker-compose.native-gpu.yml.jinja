@@ -101,7 +101,7 @@ services:
       UCX_CUDA_IPC_CACHE_MAX_REGIONS:
       UCX_CUDA_IPC_CACHE_MAX_SIZE:
       UCX_TCP_CM_REUSEADDR: y
-      UCX_PROTO_INFO: y
+      UCX_PROTO_INFO: ${PRESTO_GPU_UCX_PROTO_INFO:-y}
       # don't know, leave it for now
       UCX_TCP_KEEPINTVL: 1ms
       UCX_KEEPALIVE_INTERVAL: 1ms
@@ -144,7 +144,7 @@ services:
       UCX_RNDV_PIPELINE_ERROR_HANDLING: y
       UCX_TLS: tcp,cuda_copy,cuda_ipc
       UCX_TCP_CM_REUSEADDR: y
-      UCX_PROTO_INFO: y
+      UCX_PROTO_INFO: ${PRESTO_GPU_UCX_PROTO_INFO:-y}
       # don't know, leave it for now
       UCX_TCP_KEEPINTVL: 1ms
       UCX_KEEPALIVE_INTERVAL: 1ms
@@ -172,7 +172,7 @@ services:
       UCX_RNDV_PIPELINE_ERROR_HANDLING: y
       UCX_TLS: tcp,cuda_copy,cuda_ipc
       UCX_TCP_CM_REUSEADDR: y
-      UCX_PROTO_INFO: y
+      UCX_PROTO_INFO: ${PRESTO_GPU_UCX_PROTO_INFO:-y}
       # don't know, leave it for now
       UCX_TCP_KEEPINTVL: 1ms
       UCX_KEEPALIVE_INTERVAL: 1ms
