@@ -203,7 +203,8 @@ if [[ -z ${AWS_ACCESS_KEY_ID} ]]; then
 fi
 
 # Exchange over EFA: one NUMA-local EFA device per GPU pair, with the WXD-launch rendezvous tuning.
-export PRESTO_GPU_UCX_TLS=tcp,srd,cuda_copy,self
+# UCX_TLS_OVERRIDE (local experiment hook), e.g. tcp,srd,cuda_copy,cuda_ipc,self to add CUDA IPC.
+export PRESTO_GPU_UCX_TLS=${UCX_TLS_OVERRIDE:-tcp,srd,cuda_copy,self}
 export PRESTO_GPU_UCX_RNDV_PIPELINE_ERROR_HANDLING=n
 export UCX_MAX_RNDV_RAILS=1 UCX_RNDV_FRAG_SIZE=cuda:32M UCX_RNDV_FRAG_MEM_TYPES=cuda UCX_SOCKADDR_TLS_PRIORITY=tcp
 export UCX_RNDV_FRAG_ALLOC_COUNT=host:128,cuda:32 UCX_CUDA_IPC_CACHE_MAX_REGIONS=inf UCX_CUDA_IPC_CACHE_MAX_SIZE=16G
