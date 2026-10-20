@@ -352,6 +352,11 @@ if [[ -n ${ITERATIONS} ]]; then
   PYTEST_ARGS+=("--iterations ${ITERATIONS}")
 fi
 
+# Local experiment hook: data sets without a metadata.json next to the table data.
+if [[ -n ${PRESTO_SCALE_FACTOR:-} ]]; then
+  PYTEST_ARGS+=("--scale-factor ${PRESTO_SCALE_FACTOR}")
+fi
+
 if [[ -n ${TAG} ]]; then
   if [[ ! ${TAG} =~ ^[a-zA-Z0-9_]+$ ]]; then
     echo "Error: Invalid --tag value. Tags must contain only alphanumeric and underscore characters."
