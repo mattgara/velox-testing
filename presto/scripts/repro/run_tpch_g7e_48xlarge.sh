@@ -261,6 +261,11 @@ for i in 0 1 2 3 4 5 6 7; do
     setprop $W/config_native.properties ucxx.error_handling false
     setprop $W/config_native.properties ucxx.blocking_progress false
   fi
+  # Extra worker properties for experiments, e.g.
+  # EXTRA_WORKER_PROPERTIES="cudf.exchange_compression=fused-for-bitpacked".
+  for kv in ${EXTRA_WORKER_PROPERTIES:-}; do
+    setprop $W/config_native.properties "${kv%%=*}" "${kv#*=}"
+  done
 done
 C=$G/etc_coordinator/config_native.properties
 setprop $C join-max-broadcast-table-size 20788MB
