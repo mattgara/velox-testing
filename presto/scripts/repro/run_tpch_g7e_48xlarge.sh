@@ -301,7 +301,12 @@ for kv in ${EXTRA_COORDINATOR_PROPERTIES:-}; do
 done
 
 # 3. Start the cluster with the configs above.
-./start_native_gpu_presto.sh --skip-generate-config -w 8 -g 0,1,2,3,4,5,6,7 --kvikio-threads 16 --num-drivers 2
+# Local experiment hook: PRESTO_PROFILE_ARGS starts the workers under nsys with these arguments,
+# e.g. PRESTO_PROFILE_ARGS="-t nvtx,cuda --cuda-memory-usage=true".
+profile_args=()
+[[ -n ${PRESTO_PROFILE_ARGS:-} ]] && profile_args=(--profile --profile-args "$PRESTO_PROFILE_ARGS")
+./start_native_gpu_presto.sh --skip-generate-config -w 8 -g 0,1,2,3,4,5,6,7 --kvikio-threads 16 --num-drivers 2 \
+  "${profile_args[@]}"
 
 # 4. The start script does not wait for the workers; wait until all 8 are registered.
 for _ in $(seq 150); do
