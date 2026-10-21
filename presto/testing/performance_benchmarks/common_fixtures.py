@@ -176,6 +176,16 @@ def presto_cursor(request):
     return conn.cursor()
 
 
+def _query_schemas():
+    """Local experiment hook: PRESTO_QUERY_SCHEMAS="Q9=schema_a,Q21=schema_b" runs those queries against another
+    schema of the same data, e.g. a metastore copy with different column statistics. Other queries use --schema-name."""
+    mapping = {}
+    for item in filter(None, os.environ.get("PRESTO_QUERY_SCHEMAS", "").split(",")):
+        query_id, schema = item.split("=")
+        mapping[query_id.strip()] = schema.strip()
+    return mapping
+
+
 @pytest.fixture(scope="module")
 def benchmark_query(request, presto_cursor, benchmark_queries, benchmark_result_collector, ctas_results):
     iterations = request.config.getoption("--iterations")
@@ -210,6 +220,25 @@ def benchmark_query(request, presto_cursor, benchmark_queries, benchmark_result_
     failed_queries_dict = benchmark_dict[BenchmarkKeys.FAILED_QUERIES_KEY]
     assert failed_queries_dict == {}
 
+    query_schemas = _query_schemas()
+    schema_cursors = {}
+
+    def cursor_for(query_id):
+        schema = query_schemas.get(str(query_id))
+        if schema is None:
+            return presto_cursor
+        if schema not in schema_cursors:
+            conn = prestodb.dbapi.connect(
+                host=hostname,
+                port=port,
+                user=request.config.getoption("--user"),
+                catalog="hive",
+                schema=schema,
+                session_properties=session_properties_from_config(request.config),
+            )
+            schema_cursors[schema] = conn.cursor()
+        return schema_cursors[schema]
+
     def benchmark_query_function(query_id):
         profile_output_file_path = None
         scratch_table = None
@@ -228,6 +257,9 @@ def benchmark_query(request, presto_cursor, benchmark_queries, benchmark_result_
                 profile_output_file_path = f"{profile_output_dir_path.absolute()}/{query_id}"
                 start_profiler(profile_script_path, profile_output_file_path)
             result = []
+            query_cursor = cursor_for(query_id)
+            if query_cursor is not presto_cursor:
+                print(f"[QuerySchema] {query_id} runs against schema {query_schemas[str(query_id)]}.")
             for iteration_num in range(iterations):
                 if cache_mode == "cold":
                     # Reset before every iteration — no first-vs-rest split, unlike hot/lukewarm.
@@ -250,7 +282,7 @@ def benchmark_query(request, presto_cursor, benchmark_queries, benchmark_result_
                 else:
                     query = "--" + str(benchmark_type) + "_" + str(query_id) + "--" + "\n" + benchmark_queries[query_id]
 
-                cursor = presto_cursor.execute(query)
+                cursor = query_cursor.execute(query)
 
                 if ctas_results is not None:
                     # CTAS returns only its update count to the client. Consuming it
