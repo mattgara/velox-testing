@@ -106,6 +106,9 @@ services:
       # cuDF pinned host pool (default 64 MiB growing to 1 GiB, then per-allocation fallback).
       LIBCUDF_PINNED_POOL_SIZE:
       LIBCUDF_PINNED_POOL_MAX_SIZE:
+      # Crash diagnosis (local experiment hook): e.g. LD_PRELOAD=/usr/lib64/libSegFault.so SEGFAULT_SIGNALS=segv.
+      LD_PRELOAD:
+      SEGFAULT_SIGNALS:
       UCX_TCP_CM_REUSEADDR: y
       UCX_PROTO_INFO: ${PRESTO_GPU_UCX_PROTO_INFO:-y}
       # don't know, leave it for now
