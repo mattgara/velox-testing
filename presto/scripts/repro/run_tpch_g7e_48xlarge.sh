@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION.
 # SPDX-License-Identifier: Apache-2.0
 
-# TPC-H on S3 with 8 GPU workers on one g7e.48xlarge; see print_help below. The NIC, EFA and
+# TPC-H on S3 with 8 GPU workers (or the GPUs in PRESTO_GPU_IDS) on one g7e.48xlarge; see print_help below. The NIC, EFA and
 # memory settings are specific to that instance type.
 #
 # Common runs (images presto-coordinator:<tag> and presto-native-worker-gpu:<tag> must exist):
@@ -239,6 +239,12 @@ if [[ $NIC_BIND == true ]]; then
   export KVIKIO_REMOTE_IO_INTERFACE_GPU_6='if!enp187s0' KVIKIO_REMOTE_IO_INTERFACE_GPU_7='if!enp187s0'
 fi
 
+# Local experiment hook: PRESTO_GPU_IDS runs one worker per listed GPU instead of all eight, e.g.
+# PRESTO_GPU_IDS=0,1,2,3 for half the instance (one socket with its two EFA cards and two ENA NICs).
+GPU_LIST=${PRESTO_GPU_IDS:-0,1,2,3,4,5,6,7}
+IFS=, read -r -a GPUS <<< "$GPU_LIST"
+NUM_GPU_WORKERS=${#GPUS[@]}
+
 # KvikIO as in the WXD-launch runs (KVIKIO_NTHREADS=16 comes from --kvikio-threads below).
 # MULTI_POLL needs the task size to be at most the bounce buffer size.
 export KVIKIO_REMOTE_IO_BACKEND=MULTI_POLL KVIKIO_REMOTE_IO_NUM_REACTORS=4
@@ -246,14 +252,14 @@ export KVIKIO_REMOTE_IO_REACTOR_DISPATCH=${DISPATCH} KVIKIO_REMOTE_IO_MAX_CONCUR
 export KVIKIO_TASK_SIZE=33554432 KVIKIO_BOUNCE_BUFFER_SIZE=33554432
 export KVIKIO_REMOTE_IO_NONTEMPORAL_COPY=${NONTEMPORAL_COPY}
 
-# 1. Generate configs: 8 workers, 2 drivers each.
-VARIANT_TYPE=gpu NUM_WORKERS=8 GPU_IDS=0,1,2,3,4,5,6,7 VCPU_PER_WORKER=2 OVERWRITE_CONFIG=true \
+# 1. Generate configs: one worker per GPU, 2 drivers each.
+VARIANT_TYPE=gpu NUM_WORKERS=$NUM_GPU_WORKERS GPU_IDS=$GPU_LIST VCPU_PER_WORKER=2 OVERWRITE_CONFIG=true \
   ./generate_presto_config.sh
 
 # 2. Align the generated configs with the WXD-launch runs.
 G=../docker/config/generated/gpu
 setprop() { if grep -q "^$2=" "$1"; then sed -i "s|^$2=.*|$2=$3|" "$1"; else echo "$2=$3" >> "$1"; fi; }
-for i in 0 1 2 3 4 5 6 7; do
+for i in "${GPUS[@]}"; do
   W=$G/etc_worker_$i
   setprop $W/node.properties node.internal-address "$HOST_IP"
   setprop $W/config_native.properties discovery.uri http://127.0.0.1:8080
@@ -309,19 +315,20 @@ done
 # e.g. PRESTO_PROFILE_ARGS="-t nvtx,cuda --cuda-memory-usage=true".
 profile_args=()
 [[ -n ${PRESTO_PROFILE_ARGS:-} ]] && profile_args=(--profile --profile-args "$PRESTO_PROFILE_ARGS")
-./start_native_gpu_presto.sh --skip-generate-config -w 8 -g 0,1,2,3,4,5,6,7 --kvikio-threads 16 --num-drivers 2 \
+./start_native_gpu_presto.sh --skip-generate-config -w "$NUM_GPU_WORKERS" -g "$GPU_LIST" --kvikio-threads 16 --num-drivers 2 \
   "${profile_args[@]}"
 
-# 4. The start script does not wait for the workers; wait until all 8 are registered.
+# 4. The start script does not wait for the workers; wait until all of them are registered.
 for _ in $(seq 150); do
-  [[ $(curl -s localhost:8080/v1/node | jq length 2>/dev/null || echo 0) == 8 ]] && break
+  [[ $(curl -s localhost:8080/v1/node | jq length 2>/dev/null || echo 0) == "$NUM_GPU_WORKERS" ]] && break
   sleep 2
 done
 echo "Registered workers: $(curl -s localhost:8080/v1/node | jq length)"
 
-# 5. Record what worker 3 actually runs with.
-docker inspect presto-native-worker-gpu-3 --format 'network={{.HostConfig.NetworkMode}}'
-docker exec presto-native-worker-gpu-3 env | grep -E '^(KVIKIO_|UCX_TLS|UCX_NET_DEVICES)' | sort
+# 5. Record what one worker (GPU 3 by default) actually runs with.
+inspect_worker=presto-native-worker-gpu-${GPUS[$(( NUM_GPU_WORKERS > 3 ? 3 : 0 ))]}
+docker inspect "$inspect_worker" --format 'network={{.HostConfig.NetworkMode}}'
+docker exec "$inspect_worker" env | grep -E '^(KVIKIO_|UCX_TLS|UCX_NET_DEVICES)' | sort
 
 if [[ $START_ONLY == true ]]; then
   exit 0
