@@ -72,12 +72,14 @@ services:
     container_name: presto-native-worker-gpu-{{ gpu_id }}
 {% if host_network %}
     # WXD-like: host networking (per-NIC S3 binding, EFA exchange) plus EFA verbs devices.
-    # g7.24xlarge: one EFA device (rdmap95s0 = uverbs0).
+    # g7.24xlarge: one EFA device (rdmap95s0 = uverbs0). g7.48xlarge with two EFA interfaces (2026-11-18): rdmap83s0 =
+    # uverbs0 (NUMA node 0, GPUs 0-3) and rdmap176s0 = uverbs1 (node 1, GPUs 4-7).
     network_mode: host
 {%- if efa_devices %}
     devices:
       - /dev/infiniband/rdma_cm
       - /dev/infiniband/uverbs0
+      - /dev/infiniband/uverbs1
 {%- endif %}
 {% endif %}
     environment:
