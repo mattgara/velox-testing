@@ -9,10 +9,10 @@ This directory reproduces one result: the 22 TPC-H queries at scale factor 3000 
 
 ## Run
 
-From a git checkout of this branch on a g7.48xlarge set up as in "Run host":
+From the directory holding a git checkout of this branch, on a g7.48xlarge set up as in "Run host":
 
 ```bash
-presto/scripts/repro/ge_g7_48xlarge/run_repro.sh <image tag> [output dir]
+velox-testing/presto/scripts/repro/ge_g7_48xlarge/run_repro.sh <image tag> [output dir]
 ```
 
 The script runs `presto-coordinator:<image tag>` and `presto-native-worker-gpu:<image tag>`. It takes about
@@ -45,36 +45,66 @@ the coordinator's elapsed time.
 | same-day A/B, 2026-11-19 | original | 48.48 s, 48.54 s | all equal |
 | same-day A/B, 2026-11-19 | rebuilt from the branches below | 48.33 s, 48.10 s | all equal |
 | `run_repro.sh`, 2026-11-20, fresh checkout | rebuilt | 48.05 s | all equal |
+| from scratch with "Build steps" 1-9, 2026-11-20 | built with this README | 48.30 s | all equal |
 
 For scale: the same 22 queries without grouped execution on a g7e.48xlarge (4 RTX PRO 6000 GPUs) take 56.16 s, so the
 result is 0.86x that time.
 
 ### Run host
 
-- AWS g7.48xlarge in us-east-2: 8 RTX PRO 4500 Blackwell Server Edition GPUs (32 GB, sm_120), 192 vCPUs, 768 GiB of
-  host memory in two NUMA nodes (GPUs 0-3 on node 0, GPUs 4-7 on node 1). Nothing else runs on the GPUs.
-- Two EFA interfaces, one per NUMA node: the primary interface on network card 0 created as EFA, and a second EFA
-  interface attached as network card 1, device index 1. On the tested instance the devices are `rdmap83s0` (node 0)
-  and `rdmap176s0` (node 1). The launcher gives GPUs 0-3 the node 0 device and GPUs 4-7 the node 1 device. EFA needs
-  a security group that allows all traffic from itself, on both interfaces.
-- An instance profile that can read the data bucket. The launcher exports the instance credentials to the workers,
+Machine:
+
+- AWS g7.48xlarge in us-east-2 (the data's region): 8 RTX PRO 4500 Blackwell Server Edition GPUs (32 GB, sm_120),
+  192 vCPUs, 768 GiB of host memory in two NUMA nodes (GPUs 0-3 on node 0, GPUs 4-7 on node 1). Nothing else runs on
+  the GPUs.
+- Operating system image: Amazon Linux 2023 with the NVIDIA driver (tested: 595.91.07) and CUDA, the EFA driver, Docker
+  (tested: 25.0.16) with the NVIDIA Container Toolkit, and the AWS CLI v2. The tested instance was launched from an
+  internal image of that kind.
+- Two EFA interfaces, one per NUMA node, in a security group that allows all inbound traffic from itself and all
+  outbound traffic (EFA needs the self-referencing rule). The launcher gives GPUs 0-3 the node 0 device and GPUs 4-7
+  the node 1 device (tested names: `rdmap83s0` and `rdmap176s0`).
+- An instance profile that can read `s3://rapids-tpch`. The launcher exports the instance credentials to the workers,
   which read Parquet from S3 with KvikIO.
-- NVIDIA driver 595.91.07, Docker 25.0.16 with the NVIDIA container runtime.
-- On the machine that runs the script: Docker Compose v2 (tested with 5.5.0), Python 3.9 or later (standard library
-  only), the AWS CLI v2 on `PATH`, curl and git. The g7 AMI has no Compose plugin, so the tested runs used a client
-  container from `build/client.dockerfile`. The launcher's bind mounts use host paths, so the checkout must be mounted
-  at the same path inside the container:
+- IMDSv2, a 1000 GB gp3 root volume (images and logs; the data stays on S3).
 
-  ```bash
-  docker build -t ge-repro-client -f presto/scripts/repro/ge_g7_48xlarge/build/client.dockerfile presto/scripts/repro/ge_g7_48xlarge/build
-  cd .. && docker run -d --name ge-repro-client --network host -u $(id -u):$(stat -c %g /var/run/docker.sock) -e HOME=$HOME \
-    -v /var/run/docker.sock:/var/run/docker.sock -v /usr/bin/docker:/usr/local/bin/docker:ro \
-    -v /usr/local/aws-cli:/usr/local/aws-cli:ro -v $PWD:$PWD -w $PWD --entrypoint sleep ge-repro-client infinity
-  docker exec -e PATH=/usr/local/bin:/usr/bin:/usr/local/aws-cli/v2/current/bin ge-repro-client \
-    velox-testing/presto/scripts/repro/ge_g7_48xlarge/run_repro.sh <image tag>
-  ```
+Launch, then add the second EFA interface while the instance is stopped:
 
-- Images built on another machine move with `docker save <images> | zstd` and `zstd -dc | docker load`.
+```bash
+aws ec2 run-instances --region us-east-2 --instance-type g7.48xlarge --image-id <AMI> \
+  --iam-instance-profile Name=<profile> --metadata-options HttpTokens=required \
+  --network-interfaces "DeviceIndex=0,NetworkCardIndex=0,InterfaceType=efa,SubnetId=<subnet>,Groups=<efa group>" \
+  --block-device-mappings 'DeviceName=/dev/sda1,Ebs={VolumeSize=1000,VolumeType=gp3}'
+aws ec2 stop-instances --instance-ids <instance>
+aws ec2 create-network-interface --interface-type efa --subnet-id <subnet> --groups <efa group>
+aws ec2 attach-network-interface --instance-id <instance> --network-interface-id <new interface> \
+  --network-card-index 1 --device-index 1
+aws ec2 start-instances --instance-ids <instance>
+```
+
+Software on the machine that runs the scripts:
+
+- Docker Compose v2 (tested: 5.5.0), git, curl, the AWS CLI v2 on `PATH`.
+- Python 3.12 with `venv`, and access to PyPI: starting a cluster renders the Compose template in a Python 3.12
+  virtual environment with Jinja2 (`scripts/py_env_functions.sh`). The repro's own Python scripts need only the
+  standard library; the sample writer (build step 7) needs pyarrow.
+- A git checkout of this branch (velox-testing's scripts expect one).
+
+The g7 image has no Compose plugin, so the tested runs used a client container from `build/client.dockerfile`
+(CentOS Stream 9 with Python 3.12, git and Compose 5.5.0; the host's docker CLI and AWS CLI mounted in). The
+launcher's bind mounts use host paths, so the working directory must be mounted at the same path inside the container;
+it also serves as the home directory there (for pip):
+
+```bash
+docker build -t ge-repro-client -f velox-testing/presto/scripts/repro/ge_g7_48xlarge/build/client.dockerfile velox-testing/presto/scripts/repro/ge_g7_48xlarge/build
+docker run -d --name ge-repro-client --network host -u $(id -u):$(stat -c %g /var/run/docker.sock) -e HOME=$PWD \
+  -v /var/run/docker.sock:/var/run/docker.sock -v /usr/bin/docker:/usr/local/bin/docker:ro \
+  -v /usr/local/aws-cli:/usr/local/aws-cli:ro -v $PWD:$PWD -w $PWD --entrypoint sleep ge-repro-client infinity
+docker exec -e PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/usr/local/aws-cli/v2/current/bin ge-repro-client \
+  velox-testing/presto/scripts/repro/ge_g7_48xlarge/run_repro.sh <image tag>
+```
+
+(run from the directory that holds the `velox-testing` checkout). Images built on another machine move with
+`docker save <images> | zstd` and `zstd -dc | docker load`.
 
 Data: TPC-H SF3000 with decimal columns, Parquet, tables not bucketed, at
 `s3://rapids-tpch/presto-gpu/sf3k_decimal_hive_flat` (us-east-2). The Hive metastore next to it holds the table
@@ -122,131 +152,182 @@ Parquet reader (return the decoded columns when the read filter keeps every row)
 the archive of a fork's commit under the upstream name, so the download works while the commit is on the fork branch
 above.
 
-Pinned inputs, used without changes:
+Inputs used without changes:
 
 | Input | Pin |
 |---|---|
-| Presto base of the coordinator | github.com/kingcrimsontianyu/presto 563e7787ee (`wxd-upstream`) |
-| Build dependencies image | `ghcr.io/rapidsai/velox-testing-images:presto-deps-30c1635-velox-7a876d3-cuda12.9-20261113-pinned-43369494090`, amd64 manifest `sha256:78a4723b293947eb1dcb7a421bb3ec87c244ee670a2c3736343a3cbf7f943842` |
+| Presto base of the coordinator | 563e7787ee (kingcrimsontianyu/presto `wxd-upstream`; also in mattgara/presto as an ancestor of the coordinator branch) |
 | UCX | github.com/openucx/ucx pull request 11979, head 961c63b57e |
-| Other Velox dependencies (rapids-cmake, RMM, KvikIO, ...) | the commits and checksums in the Velox branch's `CMake/resolve_dependency_modules/` |
+| Velox's other dependencies (rapids-cmake, RMM, KvikIO, ...) and the dependencies image's libraries | the commits and checksums in the Velox branch's `CMake/resolve_dependency_modules/` and `scripts/` |
 
-The dependencies image is a private ghcr package: pulling it needs read access to `rapidsai/velox-testing-images`.
-Its name carries the Velox commit it was made for (7a876d3); it provides the toolchain and system libraries only, and
-the build compiles the Velox branch.
+### Build steps
 
-Getting the sources (the Presto trees must be git checkouts, because Presto's Maven build runs git-commit-id-plugin):
+Everything below runs in one empty working directory, as the same user throughout. Steps 1-6 need an x86_64 Linux
+host with Docker and its buildx plugin (BuildKit; steps 2 and 3 use `RUN --mount`), and network access to GitHub,
+Maven Central and the other download sites of the dependency scripts. Steps 7-9 run on the g7.48xlarge (they need the
+data), in the client container of "Run host" if the host has no Compose; that container has no buildx, which only
+step 8's plain Dockerfile tolerates, so run steps 1-6 on the host itself. Images built on another machine move with
+`docker save <images> | zstd` and `zstd -dc | docker load`.
 
-```bash
-git clone -b repro/ge-g7-48s/velox https://github.com/mattgara/velox.git velox
-git clone -b repro/ge-g7-48s/worker-presto https://github.com/mattgara/presto.git presto
-git clone -b repro/ge-g7-48s/velox-testing https://github.com/mattgara/velox-testing.git velox-testing
-git clone -b repro/ge-g7-48s/coordinator https://github.com/mattgara/presto.git presto-coordinator
-git clone -b repro/ge-g7-48s/sample-stats https://github.com/mattgara/presto.git presto-sample-stats
-git clone https://github.com/kingcrimsontianyu/presto.git presto-base && git -C presto-base checkout 563e7787ee
-```
+Tested from scratch on a g7.48xlarge on 2026-11-20 by running these code blocks (with `NUM_THREADS=64`): steps 1-6
+took about 40 minutes (dependencies image 25, worker 10, UCX 2, Java 7 while the dependencies image built), steps 7-8
+about 3 minutes, and step 9 gave 48.30 s with every check passing ("Expected result"). The test found three gaps that
+are fixed here: the ownership hand-back in steps 4 and 5, and the client container's `HOME` and `PATH` in "Run host".
 
-### Worker image (`presto-native-worker-gpu`)
-
-1. Build context: a directory with `presto/` (worker branch), `velox/` (Velox branch) and `velox-testing/` (this
-   branch) side by side, as velox-testing expects. The verified build used plain trees (`git archive` of each branch)
-   and a `.dockerignore` of `**/.git`. The Velox sources come from the Velox branch, not from Presto's `velox`
-   submodule (the submodule points at 780d58a0ca).
-2. Build with `presto/docker/native_build.dockerfile` on the dependencies image, CUDA code for sm_120 only. It needs
-   docker buildx (the verified build used a `docker-container` builder limited to 100 GB of memory, with 32 compile
-   threads) and network access for the Velox dependencies:
+1. Sources. One Presto clone serves the worker, the coordinator base, the coordinator jars and the plugin:
 
    ```bash
-   docker buildx build --load --no-cache -f velox-testing/presto/docker/native_build.dockerfile \
-     --build-context base=docker-image://<dependencies image>@sha256:78a4723b293947eb1dcb7a421bb3ec87c244ee670a2c3736343a3cbf7f943842 \
-     --build-arg BASE_IMAGE=base --build-arg GPU=ON --build-arg BUILD_TYPE=release --build-arg CUDA_ARCHITECTURES=120 \
-     --build-arg NUM_THREADS=32 --build-arg BUILD_BASE_DIR=<fresh build directory> \
-     --build-arg ENABLE_SCCACHE=OFF --build-arg SCCACHE_NO_DIST_COMPILE=1 \
-     --build-arg PRESTO_SHA=2987516234... --build-arg PRESTO_BRANCH=repro/ge-g7-48s/worker-presto \
-     --build-arg VELOX_SHA=a91334d595... --build-arg VELOX_BRANCH=repro/ge-g7-48s/velox \
-     -t presto-native-worker-gpu:<tag>-base <build context>
+   git clone https://github.com/mattgara/presto.git presto
+   git clone --depth 1 -b repro/ge-g7-48s/velox https://github.com/mattgara/velox.git velox
+   git clone -b repro/ge-g7-48s/velox-testing https://github.com/mattgara/velox-testing.git velox-testing
+   R=velox-testing/presto/scripts/repro/ge_g7_48xlarge
    ```
 
-   The `PRESTO_*` and `VELOX_*` arguments only set provenance labels.
-3. UCX: build UCX from the pull request head inside the dependencies image (for its CUDA and toolchain):
+2. Dependencies image: the toolchain and third-party libraries the worker compiles against, built the way
+   velox-testing's CI and `presto/scripts/build_centos_deps_image.sh` build it: Presto's
+   `centos-dependency.dockerfile` with Velox's dependency scripts and CMake files. CUDA 12.9.
 
    ```bash
-   docker run --name ucx-build -v <prefix dir>:/ucx -v <src dir>:/src --entrypoint bash <dependencies image> -c '
-     cd /src && git clone https://github.com/openucx/ucx.git && cd ucx
+   mkdir -p deps-ctx/velox
+   git -C presto archive origin/repro/ge-g7-48s/worker-presto presto-native-execution | tar -x -C deps-ctx --strip-components=1
+   git -C velox archive HEAD scripts CMake | tar -x -C deps-ctx/velox
+   docker build --build-arg CUDA_VERSION=12.9 -f deps-ctx/scripts/dockerfiles/centos-dependency.dockerfile \
+     -t ge-repro-deps:cuda12.9 deps-ctx
+   ```
+
+   The verified build used the image velox-testing's CI published for the same purpose
+   (`ghcr.io/rapidsai/velox-testing-images:presto-deps-30c1635-velox-7a876d3-cuda12.9-20261113-pinned-43369494090`,
+   amd64 manifest `sha256:78a4723b293947eb1dcb7a421bb3ec87c244ee670a2c3736343a3cbf7f943842`, a private package). Pulling
+   it instead of step 2 saves the build; a local build gets the libraries' current packages, so it is not byte
+   identical. The build downloads sources and jars from many sites (GitHub, Maven Central, Apache mirrors) without
+   retries, in one long step (25 minutes on a g7.48xlarge); a rate limit or a cut-off download fails that step near
+   its end (seen: HTTP 429 from Maven Central on a host it rate-limits). Run it again, from a host that is not
+   rate-limited.
+
+3. Worker image: velox-testing's `native_build.dockerfile` on the dependencies image, with the sources as plain trees
+   side by side (the Velox sources come from the Velox branch, not from Presto's `velox` submodule, which points at
+   780d58a0ca). CUDA code for sm_120 only. `NUM_THREADS` is the number of compile jobs: raise it on a host with more
+   cores and memory. The build keeps its objects in a BuildKit cache mount at `BUILD_BASE_DIR`, which `--no-cache`
+   does not clear: give each clean build a new `BUILD_BASE_DIR`.
+
+   ```bash
+   mkdir -p ctx/presto ctx/velox ctx/velox-testing
+   git -C presto archive origin/repro/ge-g7-48s/worker-presto | tar -x -C ctx/presto
+   git -C velox archive HEAD | tar -x -C ctx/velox
+   git -C velox-testing archive HEAD | tar -x -C ctx/velox-testing
+   printf '**/.git\n' > ctx/.dockerignore
+   docker build --no-cache -f ctx/velox-testing/presto/docker/native_build.dockerfile \
+     --build-arg BASE_IMAGE=ge-repro-deps:cuda12.9 --build-arg GPU=ON --build-arg BUILD_TYPE=release \
+     --build-arg CUDA_ARCHITECTURES=120 --build-arg NUM_THREADS=32 --build-arg BUILD_BASE_DIR=/ge_repro_build_$(date +%s) \
+     --build-arg ENABLE_SCCACHE=OFF --build-arg SCCACHE_NO_DIST_COMPILE=1 \
+     -t presto-native-worker-gpu:ge-repro-ucx122 ctx
+   ```
+
+4. UCX: build UCX from the pull request head inside the dependencies image (for its CUDA and toolchain), then put it
+   over the worker image's UCX 1.22.0 with `build/ucx_variant.dockerfile`:
+
+   ```bash
+   mkdir -p ucx
+   docker run --name ge-repro-ucx -v $PWD/ucx:/ucx -e OWNER=$(id -u):$(id -g) --entrypoint bash ge-repro-deps:cuda12.9 -c '
+     cd /tmp && git clone https://github.com/openucx/ucx.git && cd ucx
      git fetch origin pull/11979/head && git checkout 961c63b57e
      ./autogen.sh && ./contrib/configure-release --prefix=/ucx/pr11979 --enable-cma --enable-mt --with-gnu-ld \
        --with-rdmacm --with-verbs --without-go --without-java --with-cuda=/usr/local/cuda
-     make -j32 && make install'
+     make -j32 && make install && chown -R $OWNER /ucx'
+   docker build -f $R/build/ucx_variant.dockerfile --build-arg BASE_IMAGE=presto-native-worker-gpu:ge-repro-ucx122 \
+     --build-arg UCX_DESCRIPTION="openucx/ucx#11979 head 961c63b57e" -t presto-native-worker-gpu:ge-repro ucx/pr11979
    ```
 
-   then put it over the worker image's UCX 1.22.0 with `build/ucx_variant.dockerfile` (context = the prefix):
+5. Java: the coordinator is the Presto base commit's coordinator with two jars replaced, not a full build of the
+   coordinator branch (that branch changes only `presto-main-base` and `presto-hive`, plus their documentation and one
+   expected-plan test file). The sample statistics plugin comes from the sample-stats branch, which is based on a
+   newer Presto master (a73a3d8e98) and loads into the coordinator through the statistics provider SPI
+   (`build/sample_stats.md`). One container builds the three in turn in the Presto clone (git-commit-id-plugin needs
+   the `.git` directory), with Java 17, Node.js 22 and yarn 1.22.22 for `presto-ui`:
 
    ```bash
-   docker build -f velox-testing/presto/scripts/repro/ge_g7_48xlarge/build/ucx_variant.dockerfile \
-     --build-arg BASE_IMAGE=presto-native-worker-gpu:<tag>-base \
-     --build-arg UCX_DESCRIPTION="openucx/ucx#11979 head 961c63b57e" -t presto-native-worker-gpu:<tag> <prefix dir>/pr11979
+   docker run --name ge-repro-java -v $PWD:/w -w /w/presto -e PRESTO_VERSION=testing -e OWNER=$(id -u):$(id -g) \
+     eclipse-temurin:17-jdk-jammy bash -c '
+     set -e
+     apt-get update -qq && apt-get install -y -qq git curl > /dev/null
+     curl -fsSL https://deb.nodesource.com/setup_22.x | bash - > /dev/null && apt-get install -y -qq nodejs > /dev/null
+     npm install -g yarn@1.22.22 > /dev/null
+     git config --global --add safe.directory "*"
+     F="-DskipTests -Dair.check.skip-all=true --no-transfer-progress -T 16"
+     git checkout -q --detach 563e7787ee27fad295ee196244d11cef694a2722
+     ./mvnw clean install $F -pl "!presto-docs" -pl "!presto-openapi"
+     cp -r docker /w/coord-base
+     cp presto-server/target/presto-server-*.tar.gz /w/coord-base/presto-server-testing.tar.gz
+     cp presto-function-server/target/presto-function-server-*executable.jar /w/coord-base/presto-function-server-executable.jar
+     cp presto-function-server/target/presto-function-server-*executable.jar /w/coord-base/presto-function-server-testing-executable.jar
+     cp presto-cli/target/presto-cli-*-executable.jar /w/coord-base/presto-cli-testing-executable.jar
+     chmod +r /w/coord-base/presto-cli-testing-executable.jar
+     git checkout -q --detach origin/repro/ge-g7-48s/coordinator
+     ./mvnw clean install $F -pl presto-main-base,presto-hive -am
+     mkdir -p /w/overlay
+     cp presto-main-base/target/presto-main-base-0.301-SNAPSHOT.jar presto-hive/target/presto-hive-0.301-SNAPSHOT.jar /w/overlay/
+     git checkout -q --detach origin/repro/ge-g7-48s/sample-stats
+     ./mvnw clean install $F -pl presto-sample-stats-plugin -am
+     cp -r presto-sample-stats-plugin/target/presto-sample-stats-plugin-0.301-SNAPSHOT /w/overlay/plugin
+     chown -R $OWNER /w/presto /w/coord-base /w/overlay'
    ```
 
-### Coordinator image (`presto-coordinator`)
+   The containers in steps 4 and 5 run as root (they install packages) and give what they write back to the calling
+   user, who runs steps 7 and 8. The base copies are what `presto/scripts/build_presto_java_package.sh` does. Any
+   Maven Central mirror works (the artifacts are the same). A download that the server cuts off fails the build;
+   adding `-Daether.connector.http.retryHandler.count=5` to `F` retries it.
 
-The coordinator is the Presto base commit's coordinator with two jars replaced, not a full build of the coordinator
-branch. The coordinator branch changes only `presto-main-base` and `presto-hive` (plus their documentation and one
-expected-plan test file).
-
-The Java builds ran in `eclipse-temurin:17-jdk-jammy` with git, Node.js 22 and yarn 1.22.22 (for `presto-ui`)
-installed, 32 CPUs and 96 GB of memory, and `PRESTO_VERSION=testing` in the environment. Maven flags for every build:
-`-DskipTests -Dair.check.skip-all=true --no-transfer-progress -T 16`. Any Maven Central mirror works (the artifacts are
-the same).
-
-1. Base, in `presto-base` (as `presto/scripts/build_presto_java_package.sh` does):
+6. Coordinator base image, from the base commit's `docker/` directory:
 
    ```bash
-   ./mvnw clean install <flags> -pl '!presto-docs' -pl '!presto-openapi'
-   cp presto-server/target/presto-server-*.tar.gz docker/presto-server-testing.tar.gz
-   cp presto-function-server/target/presto-function-server-*executable.jar docker/presto-function-server-executable.jar
-   cp presto-function-server/target/presto-function-server-*executable.jar docker/presto-function-server-testing-executable.jar
-   cp presto-cli/target/presto-cli-*-executable.jar docker/presto-cli-testing-executable.jar
-   chmod +r docker/presto-cli-testing-executable.jar
-   docker build --build-arg PRESTO_VERSION=testing -t presto-coordinator:<tag>-base-unlabeled docker
-   docker build -f ../velox-testing/presto/docker/provenance_labels.dockerfile \
-     --build-arg BASE_IMAGE=presto-coordinator:<tag>-base-unlabeled --build-arg PRESTO_SHA=563e7787ee27fad295ee196244d11cef694a2722 \
-     --build-arg PRESTO_BRANCH=wxd-upstream --build-arg PRESTO_REPOSITORY=https://github.com/kingcrimsontianyu/presto.git \
-     --build-arg VELOX_SHA= --build-arg VELOX_BRANCH= --build-arg VELOX_REPOSITORY= \
-     -t presto-coordinator:<tag>-base ../velox-testing/presto/docker
+   docker build --build-arg PRESTO_VERSION=testing -t presto-coordinator:ge-repro-base coord-base
    ```
 
-2. Coordinator branch, in `presto-coordinator`: `./mvnw clean install <flags> -pl presto-main-base,presto-hive -am`
-   gives `presto-main-base/target/presto-main-base-0.301-SNAPSHOT.jar` and
-   `presto-hive/target/presto-hive-0.301-SNAPSHOT.jar`.
-3. Sample statistics plugin, in `presto-sample-stats`: `./mvnw clean install <flags> -pl presto-sample-stats-plugin -am`
-   gives the directory `presto-sample-stats-plugin/target/presto-sample-stats-plugin-0.301-SNAPSHOT`. That branch is
-   based on a newer Presto master (a73a3d8e98); the plugin loads into the 563e7787ee coordinator through the
-   statistics provider SPI. See `build/sample_stats.md`.
-4. Samples: one sample per table, at most 100,000 rows each, written by `build/sample_tables.py` (needs pyarrow)
-   against any running cluster that serves the analyzed tables (for example the images above without the samples):
+7. Samples for the sample statistics provider, on the g7.48xlarge from the working directory, with the software of
+   "Run host" (in the client container: `docker exec -e PATH=... ge-repro-client bash -c '<these commands>'`, with
+   the `PATH` shown there). Fetch the metastore, start a cluster from the new worker and the base coordinator, write
+   the samples, stop the cluster:
 
    ```bash
-   python3 build/sample_tables.py -s tpch_sf3k_decimal_hive_flat_s3 -o samples -m presto/docker/.hive_metastore
+   python3.12 -m pip install --user pyarrow
+   aws s3 cp --quiet --recursive s3://rapids-tpch/presto-gpu/sf3k_decimal_hive_flat/hive_metastore/ velox-testing/presto/docker/.hive_metastore/
+   docker tag presto-native-worker-gpu:ge-repro presto-native-worker-gpu:ge-repro-sampling
+   docker tag presto-coordinator:ge-repro-base presto-coordinator:ge-repro-sampling
+   (cd velox-testing/presto/scripts/repro && PRESTO_GPU_IDS=0,1,2,3,4,5,6,7 WORKER_SYSTEM_MEMORY_GB=32 \
+     WORKER_QUERY_MEMORY_GB=24 WORKER_MEM_LIMIT=80g COORD_MEM_LIMIT=24g ./gepoc_run_tpch_g7_24xlarge.sh --start-only \
+     --no-nic-bind --image-tag ge-repro-sampling --compose-project ge-repro -s tpch_sf3k_decimal_hive_flat_s3)
+   python3.12 $R/build/sample_tables.py -s tpch_sf3k_decimal_hive_flat_s3 -o samples -m velox-testing/presto/docker/.hive_metastore
+   (cd velox-testing/presto/scripts && COMPOSE_PROJECT_NAME=ge-repro PRESTO_IMAGE_TAG=ge-repro-sampling ./stop_presto.sh)
    ```
 
-   A large table keeps the rows whose key is a multiple of a prime (for example `l_orderkey % 180001 = 0`), so the
-   sampled rows are fixed by the data. `build/samples.md5` lists the files of the verified image. `tables.properties`
-   must match exactly; the Parquet files can differ in bytes if a different writer produces them.
-5. Overlay: a build context with the two jars (step 2), `plugin/` (step 3), `samples/` (step 4) and
-   `build/sample-stats-dev.properties`, built with
-   `docker build -f build/coordinator_overlay.dockerfile --build-arg BASE=presto-coordinator:<tag>-base -t presto-coordinator:<tag> <context>`.
+   One sample per table, at most 100,000 rows. A large table keeps the rows whose key is a multiple of a prime (for
+   example `l_orderkey % 180001 = 0`), so the sampled rows are fixed by the data. `build/samples.md5` lists the files
+   of the verified image: `tables.properties` and `sample-stats.properties` must match it exactly. The Parquet files
+   differ in bytes (the writer and row order differ); in the 2026-11-20 test they held the same schema and the same
+   rows as the verified image's, table by table.
+
+8. Coordinator image: the base with the two jars, the plugin, the samples and the provider settings:
+
+   ```bash
+   cp -r samples overlay/samples && cp $R/build/sample-stats-dev.properties overlay/
+   docker build -f $R/build/coordinator_overlay.dockerfile --build-arg BASE=presto-coordinator:ge-repro-base \
+     -t presto-coordinator:ge-repro overlay
+   ```
+
+9. Run: `$R/run_repro.sh ge-repro` (see "Run").
 
 ### Verified images
 
-| Image | Original (2026-11-17) | Rebuilt from the branches (2026-11-19) |
-|---|---|---|
-| presto-native-worker-gpu | 251b9b3ef8cb | 1d0c6fdb8116 |
-| presto-coordinator | faac8fafc450 | bcced13947db |
+| Image | Original (2026-11-17) | Rebuilt from the branches (2026-11-19) | Built with "Build steps" (2026-11-20) |
+|---|---|---|---|
+| presto-native-worker-gpu | 251b9b3ef8cb | 1d0c6fdb8116 | 101706258604 |
+| presto-coordinator | faac8fafc450 | bcced13947db | a570cffafe33 |
 
 IDs are as shown by `docker images` on the g7 after `docker load`. A new build gets new IDs (timestamps), so the IDs
 only name these builds; `run_repro.sh` is the check for a new build. The original coordinator jars were assembled from
 class overlays; the jars rebuilt from the branches contain the same classes (byte for byte, or the same bytecode up to
-constant pool order). The rebuilt images gave the A/B and `run_repro.sh` results in "Expected result".
+constant pool order). The jars built with "Build steps" are byte-identical, class for class, to those in bcced13947db.
+All of these images gave the results in "Expected result".
 
 ## Files
 
