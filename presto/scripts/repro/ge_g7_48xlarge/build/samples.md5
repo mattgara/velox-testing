@@ -1,0 +1,10 @@
+e6e1e7b93c7b7ff23ed3026ee8d1ea22  samples/customer.parquet
+b6d880227146c9590ddd53a8548f3756  samples/lineitem.parquet
+e7cf793a56c226a12d3edda83ff943d8  samples/nation.parquet
+045cd158b54f3c54814b545254ff3595  samples/orders.parquet
+a478aa1bb57a3ed9bfa15d2c922af50d  samples/part.parquet
+d5ad9fbb098e916964e08567ad047f6e  samples/partsupp.parquet
+d632fdafda333814aa68b4b0b372d4d7  samples/region.parquet
+ba98c000c7e508ed6b534677a7d2ec03  samples/sample-stats.properties
+9316d390240e89b1cfc8fff174dbdab9  samples/supplier.parquet
+08fef35bd6ef09323cffdaa46dfcca25  samples/tables.properties
